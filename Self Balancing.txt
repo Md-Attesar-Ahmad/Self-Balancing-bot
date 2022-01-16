@@ -1,0 +1,161 @@
+#include <Wire.h>
+
+/*  Variable Description
+
+    accex--> to store acceleration in x-direction
+    accey--> to store acceleration in y-direction
+    accez--> to store acceleration in z-direction
+    thetaaccex--> to store x-angle calculated by acceleration 
+    thetaaccey--> to store y-angle calculated by acceleration 
+    thetaaccez--> to store z-angle calculated by acceleration 
+    thetaaccexold--> to store previous value of angle in x direction
+    thetaacceyold--> to store previous value of angle in y direction
+    gyrox--> to store angular speed in x direction
+    gyroy--> to store angular speed in y direction
+    gyroz--> to store angular speed in z direction
+    thetagyrox--> to store x-angle calculated by angular speed
+    thetagyroy--> to store y-angle calculated by angular speed
+    thetagyroz--> to store z-angle calculated by angular speed
+    timenew--> to store present value of time
+    timeold--> to store previous value of time
+    dt--> to store change in time
+    correct_thetax--> to store correct angle 
+    error--> to store error from target value
+    errSum--> to store integrated value of error w.r.t time
+    dierr--> to store differentiate value of error w.r.t time
+    output--> to store final value that will control speed of wheel
+    kp--> proportional constant
+    kd--> differentiation constant
+    ki--> Integral constant
+*/
+float accex=0.0,accey=0.0,accez=0.0,thetaaccex=0.0,thetaaccey=0.0,thetaaccexold=0.0,thetaacceyold=0.0;
+float gyrox=0.0,gyroy=0.0,gyroz=0.0,thetagyrox=0.0,thetagyroy=0.0,thetagyroz=0.0;
+float timenew=0.0,timeold=0.0,dt=0.0;
+float correct_thetax=0.0;
+
+float error,errSum,dierr,lasterr=0.0,output;
+float kp=19.4,ki=0.035,kd=0.28;
+
+void setup()
+{
+  Wire.begin();
+  setupMpu();
+  pinMode(9,OUTPUT);
+  pinMode(12,OUTPUT);
+  pinMode(10,OUTPUT);
+  pinMode(11,OUTPUT);
+  pinMode(6,OUTPUT);
+  pinMode(5,OUTPUT);
+  
+}
+
+void setupMpu()
+{
+  Wire.beginTransmission(0b1101000); //This is the I2C address of the MPU (0b1101000/0b1101001 for low/high)
+  Wire.write(0x6B);  //Accessing the register 6B - Power Management
+  Wire.write(0b00000000); //Setting Sleep register to 0
+  Wire.endTransmission();
+
+  Wire.beginTransmission(0b1101000); //I2C address of the MPU
+  Wire.write(0x1B);  //Accessing the register 1B - Gyroscope
+  Wire.write(0b00000000);  //Scale of gyro +/-250 degree/sec
+  Wire.endTransmission();  
+
+  Wire.beginTransmission(0b1101000); //I2C address of the MPU
+  Wire.write(0x1C);  //Accessing the register 1C - Accelerometer
+  Wire.write(0b00000000);  //Scale of accel +/- 2g
+  Wire.endTransmission();
+}
+
+void getacce()
+{
+  Wire.beginTransmission(0b1101000); //I2C address of the MPU
+  Wire.write(0x3B);  //Starting register for Accel Readings
+  Wire.endTransmission();
+  Wire.requestFrom(0b1101000,6);  //Request Accel Registers (3B - 40)
+  while(Wire.available() < 6);
+  accex=Wire.read()<<8|Wire.read(); //Store first two bytes into accex
+  accey=Wire.read()<<8|Wire.read(); //Store middle two bytes into accey
+  accez=Wire.read()<<8|Wire.read(); //Store last two bytes into accez
+  accex=accex/16399.0-0.02; // Coverting accex in  term of 'g' and calibrating it
+  accey=accey/16399.0-0.02;  //Coverting accey in  term of 'g' and calibrating it
+  accez=accez/16399.0-0.02;  //Coverting accez in  term of 'g' and calibrating it
+}
+
+void getgyro()
+{
+  Wire.beginTransmission(0b1101000); //I2C address of MPU
+  Wire.write(0x43);  //Starting register for Gyro Reading
+  Wire.endTransmission();
+  Wire.requestFrom(0b1101000,6);  //Request Gyro Registers
+  while(Wire.available()<6);
+  gyrox=Wire.read()<<8|Wire.read();  //Store first two bytes into gyroy
+  gyroy=Wire.read()<<8|Wire.read();  //Store middle two bytes into gyroy
+  gyroy=gyroy/131.9-1.29;  // Coverting gyroy in  term of 'g' and calibrating it
+}
+
+void calangle()
+{
+  thetaaccex=-atan(accex/sqrt(pow(accey,2)+pow(accez,2))); //Calculating angle in x-direction in radian
+  thetaaccex=thetaaccex*(180.0/PI);  //Converting angle(radian) to degree
+
+  correct_thetax=(correct_thetax+gyroy*dt)*0.98+thetaaccex*0.02;  //Applying complimentary fliter (Trusting thetaacce in long time and thetagyro in short term)
+}
+
+
+void check_tilt()
+{
+  if(error>0)    //Backward movement of Bot
+  {
+    analogWrite(5,output);
+    analogWrite(6,output);
+    
+    digitalWrite(12,HIGH);
+    digitalWrite(11,LOW);
+    digitalWrite(9,HIGH);
+    digitalWrite(10,LOW);
+  }
+  if(error<0)  //Forward movement of Bot
+  {
+    analogWrite(6,output);
+    analogWrite(5,output);
+    
+    digitalWrite(11,HIGH);
+    digitalWrite(12,LOW);
+    digitalWrite(10,HIGH);
+    digitalWrite(9,LOW);
+  }
+}
+
+
+void loop() 
+{
+  timenew=millis();
+  dt=(timenew-timeold)/1000.0;  //Caculating difference in current time and previous time in sec
+  
+  getacce();  //calling getacce
+  getgyro();  //calling getgyro
+  calangle();  //calling calangle
+  
+  
+  error=-5.89-correct_thetax;  //calculating error in angle and -5.89 is the value when the bot is vertically straight
+  errSum=errSum+(error)*dt;   //Integrating error with respect to time
+  dierr=(error-lasterr)/dt;   //Differentiating error with respect to time
+  
+  if (error<=2 && error>=-2)   // Applying Ki when error lies between [-2,2]
+   output=kp*error+ki*errSum+kd*dierr;  //calculating output ,which is to be used in analogpin to control speed of motor
+  else
+   output=kp*error+kd*dierr;
+  
+  if(output<0)  //Coverting negative output to positive output
+  output=output*(-1.0);
+
+  if(output>255)  //When output value is beyond 255 then storing 255 value in output
+  output=255;
+
+  check_tilt();  //calling check_tilt function
+
+  lasterr=error; //storing present error to last error
+  timeold=timenew;  //storing present time to last time
+
+}
